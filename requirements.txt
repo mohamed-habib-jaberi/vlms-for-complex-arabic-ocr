@@ -1,0 +1,23 @@
+# PDF rendering and image preparation
+PyMuPDF>=1.26,<2
+pdf2image==1.17.0
+Pillow>=12.2.0,<13
+
+# Dataset preparation and structured outputs
+datasets>=3,<5
+pydantic>=2,<3
+python-dotenv>=1,<2
+huggingface-hub>=0.34,<1
+tqdm>=4.67,<5
+
+# VLM inference and LoRA adapters
+torch>=2.5,<3
+transformers>=4.57,<5
+accelerate>=1,<2
+peft>=0.17,<1
+
+# Experiment tracking
+wandb>=0.22,<1
+
+# Local VS Code notebooks
+ipykernel>=6.29,<8
