@@ -5,15 +5,128 @@ For a complete French explanation of the workflow, technical choices, and strate
 
 ## Master VLM Finetuning: Extracting Data from Challenging Arabic Legal Documents
 
-We dive deep into the world of Vision Language Models (VLMs) to solve a real-world problem: processing low-quality, scanned Arabic legal documents. Standard OCR often fails with complex layouts and poor scan quality; here, we leverage the reasoning power of VLMs to extract structured data with high precision.
+We dive deep into the world of Vision Language Models (VLMs) to solve a real-world problem: processing low-quality, scanned Arabic legal documents. Standard OCR often fails with complex layouts and poor scan quality; this project explores VLM-based transcription and structured extraction, with precision and source fidelity to be measured rather than assumed.
+
+## Illustrated project workflow
+
+The project starts with scanned Arabic legal PDFs and aims to produce faithful transcription and structured document information with a small local vision-language model. The initial local experiments did not meet the required overall extraction quality. The strategy is therefore to use a stronger multimodal teacher, **Gemini**, to generate candidate answers, save image–answer examples, and improve the selected local **Gemma** model through **LoRA finetuning**.
+
+These owner-supplied screenshots explain the workflow; they are illustrations, not measured benchmarks or proof that training and deployment are complete.
+
+```text
+Arabic legal PDF → page images → local Gemma baseline
+                                  ↓ quality insufficient in initial experiments
+                         Gemini teacher extraction
+                                  ↓
+                    save and review image–answer pairs
+                                  ↓
+                      format document-level splits
+                                  ↓
+                    train LoRA with LlamaFactory
+                                  ↓
+               evaluate local Gemma + adapter on unseen documents
+```
+
+### 1. Convert PDFs into page images
+
+![PDF-to-image conversion and an Arabic legal page containing a table, stamp, and watermark](docs/images/01-pdf-to-page-images.png)
+
+**Purpose:** turn scanned pages into image inputs for a VLM. PyMuPDF renders pages at 200 DPI; Pillow applies grayscale conversion, resizing, contrast adjustment, and JPEG export. The current default width is 600 pixels. Run the notebook imports and preprocessing functions before the single-document test or batch conversion.
+
+**Input:** PDFs in `data/`. **Output:** `outputs/images/<pdf_name>/page_001.jpg`, `page_002.jpg`, and subsequent pages. The illustrated document shows the main challenges: Arabic script, small text, dense tables, stamps, watermarks, and degraded scans. Higher resolution may be needed to preserve characters and numerals. Conversion prepares inputs; it does not establish OCR accuracy.
+
+### 2. Test the local VLM and identify its limitations
+
+![An extraction instruction and page image sent to a VLM to produce structured content](docs/images/02-local-vlm-extraction.png)
+
+**Purpose:** assess whether local inference can reproduce visible text and understand document structure. The notebook contains loading and baseline generation cells for `google/gemma-3-4b-it` with PyTorch, Transformers, and Accelerate. Run environment setup, Hugging Face authentication when required, image preparation, model loading, and then generation.
+
+**Input:** page image + task instruction. **Output:** generated transcription or extraction text. The owner's initial experiments did not meet the overall extraction requirements. Gemma remains the selected local base because of its reported fidelity trade-off, but omissions, dense-page completeness, latency, and unsupported additions must still be measured. These observations are qualitative; a controlled benchmark is not established by the current repository.
+
+### 3. Use Gemini as a teacher and save image–answer pairs
+
+![Gemini produces structured answers from page images and prompts, creating image–output training pairs](docs/images/03-gemini-training-pairs.png)
+
+**Purpose:** obtain candidate supervision from a stronger multimodal model. The cloud path uses LiteLLM through OpenRouter, with `google/gemini-3-flash-preview` as the configured default provider model. The diagram abbreviates this as Gemini 3. The owner reports better extraction in these experiments; this does not establish that every answer is correct.
+
+**Input:** image + extraction prompt. **Output:** raw responses and provenance in timestamped `outputs/distillation/teacher_annotations_*.jsonl` files. Records include document/page identifiers, model ID, prompt, output, finish reason, token usage, duration, and review status. Run OpenRouter setup, page selection, payload preview, extraction, validation, saving, and summary in order. Save before closing the kernel: responses remain in memory until the saving cell.
+
+The current annotation settings select all generated pages with `dry_run=False`. Set `dry_run=True` for a local preview. Actual calls transmit images and prompts to OpenRouter and its provider and may incur charges. JSON parsing checks syntax, not transcription fidelity: review text, dates, numbers, and references against the scans before accepting the answers as supervision.
+
+This is **response-based knowledge distillation** through supervised examples, not a transfer of Gemini's weights or probabilities. The formatter also supports the imported `outputs/distillation/ocr-images-sft.jsonl` corpus and matching `pdf_images/` directory, exporting `train-v1.json` and `val-v1.json`. Imported annotations and new timestamped runs are separate sources; select the intended source explicitly. Formatting does not automatically merge or review them.
+
+### 4. Finetune a LoRA adapter
+
+![Image–output pairs used to train an initialized adapter into a fine-tuned adapter](docs/images/04-lora-adapter-training.png)
+
+**Purpose:** specialize local Gemma for Arabic legal-document extraction while keeping its pretrained base weights frozen. LoRA adds trainable low-rank updates to selected model projections. “Raw Adapter” in the illustration means newly initialized adapter parameters attached to the compatible base; the adapter is not a standalone VLM.
+
+**Input:** reviewed image + instruction + expected answer conversations. **Expected output after training:** adapter checkpoints, logs, and validation metrics. Split by source PDF so pages from one document do not cross training and validation. The two tasks in the formatter cover content/layout and metadata extraction.
+
+The notebook prepares LlamaFactory installation, dataset registry entries, and a LoRA YAML locally under `outputs/cloud_gpu/finetune/`. The starting configuration selects Gemma 3, LoRA rank 96, a 12,000-token cutoff, batch size 1, gradient accumulation 8, and BF16. Training is intended for a compatible Linux NVIDIA GPU, optionally on Vast.ai, with WandB tracking. These settings require a short trial and memory assessment. Creating the files does not start training. See [Finetune with LlamaFactory](#finetune-with-llamafactory) for prerequisites and launch commands.
+
+### 5. Use the local model with its trained adapter
+
+![Local VLM combined with a fine-tuned adapter to extract content from an image and instruction](docs/images/05-local-vlm-with-adapter.png)
+
+**Purpose:** retain local inference while benefiting from task-specific adaptation. Load the compatible Gemma base plus the trained adapter and process new page images with the same task format. The model learns from supervision; it does not query the training JSON file during inference.
+
+**Input:** unseen image + instruction + compatible base model/adapter. **Expected output:** faithful transcription, layout information, and task-specific metadata. Compare with the unmodified baseline using source-checked references, unsupported additions, omissions, character/word errors, structured-field accuracy, completeness, latency, and memory. Keep verbatim transcription separate from interpretation.
+
+This is an intended workflow, not a validated deployment. The notebook can download an external adapter checkpoint for later evaluation, but that checkpoint is not a training result produced by this project. Own finetuning, held-out evaluation, LoRA merging, and vLLM serving are not established as completed.
+
+### 6. Learning roadmap
+
+The learning sequence below transcribes the topics from the supplied roadmap image. These are learning stages, not claims that every capability has been implemented or validated. Colab setup is part of the learning material; this repository uses a local VS Code notebook.
+
+1. The use case
+2. Data parsing strategy
+3. Colab basic setup
+4. PDF to Images + Preprocessing
+5. Available VLM Collections
+6. Create a Hugging Face token
+7. Evaluate the Base VLM model
+8. VLM for Extraction and Analysis
+9. Evaluate a Cloud VLM
+10. Synthetic Data Strategy
+11. How Does LoRA Work?
+12. Knowledge Distillation
+13. LlamaFactory
+14. Format Finetuning Datasets
+15. Explore the project assets
+16. Vast.ai cloud
+17. Transfer data from Google Drive
+18. Fixing Finetuning Data Paths
+19. Setup Basic Requirements
+20. Install LlamaFactory
+21. Setup dataset_info file
+22. Setup LoRA YAML file
+23. Setup WandB account
+24. Push your model to Hugging Face
+25. Run Finetuning task
+26. Explore WandB run page
+27. Evaluate the finetuned model
+28. VLM Inference
+29. LoRA Merging
+30. vLLM Inference
+
+| Stage | Current repository status |
+| --- | --- |
+| PDF rendering and preprocessing | Implemented; single-document conversion has documented local verification. |
+| Local Gemma baseline | Loading and generation cells included; controlled quality and hardware measurements remain pending. |
+| Gemini annotation and JSONL storage | Executable workflow included; real requests are optional and billable; label review is a separate step. |
+| Dataset formatting | Implemented for the imported corpus; the documented 3,912 training and 80 validation examples are candidate supervision, not a model score. |
+| Remote LoRA preparation | Installation script, dataset registry, training YAML, and launch instructions prepared. |
+| Own finetuning and independent evaluation | Not established as completed. |
+| Local adapter deployment, merging, and vLLM serving | Later stages; not validated as an end-to-end deployment. |
 
 ## Project context and priorities
 
-1. **Local model:** target a VLM that can run on local hardware, with model weights available locally rather than requiring a hosted inference API. Model selection must account for available memory, supported hardware, and inference speed. Local inference is a goal; it is not implemented yet.
+1. **Local model:** target a VLM that can run on local hardware, with model weights available locally rather than requiring a hosted inference API. Model selection must account for available memory, supported hardware, and inference speed. Local model loading and baseline generation cells are included; their end-to-end performance and quality remain to be validated.
 2. **Low budget:** prioritize small models, efficient image preparation, and parameter-efficient finetuning such as LoRA. Evaluate a baseline before spending on training, and track compute costs alongside quality. A specific spending limit and hardware budget have not been set.
 3. **More than an OCR model:** aim to understand document content and layout and extract structured legal information, beyond transcribing text. Candidate tasks include identifying document types, extracting fields such as decision numbers and dates, and answering questions grounded in document pages. These are proposed capabilities; their output schema and evaluation criteria will be defined before implementation.
 
-The current PDF-to-image pipeline provides inputs for this future VLM workflow. Model choice, training configuration, and deployment must follow these priorities.
+The PDF-to-image, model-inference, annotation, and dataset-preparation sections provide components for this VLM workflow. Model choice, training configuration, and deployment must follow these priorities.
 
 ## What you will learn
 
@@ -101,7 +214,7 @@ Validation documents are kept separate from training documents to avoid mixing p
 
 ## Implementation status
 
-The current implementation prepares scanned Arabic PDFs as images locally in VS Code. It supports single-document and batch conversion. The notebook also includes Gemma model loading and a baseline transcription generation cell, whose full execution has not been verified by the agent. Structured data generation, model finetuning, and deployment remain planned.
+The notebook includes local single-document and batch PDF conversion, Gemma loading and baseline generation, optional Gemini extraction through OpenRouter, annotation saving, imported-corpus dataset formatting, remote LoRA setup-file preparation, and optional external-checkpoint downloads. Single-PDF conversion and dataset formatting have documented verification. Cloud quality, full-corpus label review, own finetuning, and deployment are not established as completed. See the illustrated workflow status table above for the distinction between available code and validated results.
 
 ## Migrate to Cloud GPU (optional)
 
@@ -231,8 +344,9 @@ The width of 600 pixels is a configurable starting point, not a validated optimu
 | tqdm | Progress reporting | Batch conversion |
 | ipykernel | Execute notebooks in a Python environment | Local VS Code kernel |
 | pdf2image | Alternative PDF rendering wrapper requiring Poppler | Retained dependency; not used by the current notebook |
-| datasets, pydantic, python-dotenv | Dataset management, structured data validation, and environment configuration | Available for future work |
-| torch, transformers, accelerate, peft | Model execution, training support, and LoRA adapters | Available for future work |
+| datasets, pydantic, python-dotenv | Dataset management, structured validation support, and environment configuration | Dataset preparation and environment setup; validation scope depends on the extraction cell |
+| torch, transformers, accelerate, peft | Model execution, training support, and LoRA adapters | Local Gemma loading/generation cells; own adapter training remains pending |
+| litellm, huggingface-hub | Hosted inference routing, authentication, and artifact downloads | Optional Gemini/OpenRouter calls and Hugging Face access |
 | wandb | Experiment tracking | Available for future work |
 
 Version constraints are maintained in `requirements.txt`. They specify compatible ranges rather than a complete environment lock.
