@@ -21,3 +21,6 @@ wandb>=0.22,<1
 
 # Local VS Code notebooks
 ipykernel>=6.29,<8
+
+# Optional cloud inference through OpenRouter
+litellm==1.73.6

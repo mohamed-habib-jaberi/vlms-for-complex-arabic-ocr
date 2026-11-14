@@ -10,3 +10,6 @@ venv/
 
 # Generated PDF page images
 /outputs/
+
+# Downloaded third-party document images (kept locally)
+/pdf_images/

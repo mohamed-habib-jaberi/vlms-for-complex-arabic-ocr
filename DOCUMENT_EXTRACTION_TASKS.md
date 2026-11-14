@@ -184,6 +184,56 @@ Préserver les cellules vides et signaler les cellules illisibles. Ne pas dépla
 
 Les captures montrent ces trois champs. L'extraction de séries numériques serait une extension à spécifier ; ne pas inventer de valeurs à partir d'un graphique mal lisible.
 
+## Prompt complet adapté du notebook original
+
+Le notebook `notebooks/ocr-finetune-vlm.ipynb` contient maintenant **Document Analysis & Extraction Prompt**, après la configuration et avant la conversion des PDF, comme dans `notebooks/ocr_finetune_vlm_original.ipynb`. Le prompt fourni a été adapté aux règles de fidélité du projet. Le notebook original reste intact.
+
+La variable `document_extraction_prompt` contient toutes les grandes catégories du modèle de sortie fourni. Elle reste définie séparément. La cellule de génération commente maintenant l’ancien prompt OCR et sélectionne `prompt = document_extraction_prompt`. Exécuter la cellule de définition avant la génération. Définir le prompt seul n’exécute aucune extraction. Le message utilisateur utilise donc :
+
+```python
+{"type": "text", "text": document_extraction_prompt}
+```
+
+Le modèle de champs dans le prompt décrit les types et les énumérations ; il ne constitue pas un JSON Schema exécutable. Le modèle doit retourner des valeurs réelles, jamais des descriptions telles que `string or null` ou `enum: ...`.
+
+### Champs supplémentaires du prompt fourni
+
+| Groupe ou chemin | Champs et usage |
+| --- | --- |
+| `source.dates.additional_dates[]` | `date_text`, `calendar_type`, `date_type`, `context`, `indicators` : dates citées et leur contexte, distinctes de la date principale. |
+| `official_marks.stamps[]` | `type`, `text_content`, `color`, `position`, `is_digital`, `shape` : tampons et texte imprimé visible. Une couleur originale ne peut pas être retrouvée avec certitude sur notre image en niveaux de gris. |
+| `content.has_tables`, `content.has_lists`, `content.has_charts` | Présence observée de ces structures ; `null` si indéterminée. |
+| `content.charts[].data[]` | `label`, `value`, `position` : valeurs explicitement imprimées, conservées comme chaînes ; pas d'estimation à partir de la hauteur d'une barre. |
+| `content.charts[].axis_info` | Libellés `x_axis_label`, `y_axis_label` et catégories `x_axis_type`, `y_axis_type`, selon les indices visibles. |
+| `content.charts[].notes` | Notes et annotations associées au graphique. |
+| `content.legal_articles[]` | `article_number`, `article_title`, `content` : articles juridiques et texte original. |
+| `content.financial_data[]` | `description`, `amount`, `currency` : montants et devise tels qu'écrits, sans calcul ou conversion. |
+| `structural_elements.header` | `present`, `content`, `has_logo`, `logo_description`, `reference_numbers` : éléments d'en-tête. |
+| `structural_elements.footer` | `present`, `content`, `has_page_number`, `page_info` : pied de page et pagination visible. |
+| `structural_elements.letterhead` | `present`, `organization_name`, `organization_name_secondary`, `emblem_description`, `contact_info` : papier à en-tête, sans inventer une seconde langue. |
+| `structural_elements.margins_notes` | `has_margin_notes`, `margin_content` : annotations manuscrites ou imprimées en marge. |
+| `attachments_references.attachments_mentioned[]` | `description`, `count`, `reference_number` : pièces jointes mentionnées, sans affirmer qu'elles ont été fournies. |
+| `attachments_references.referenced_documents[]` | `type`, `reference`, `date` : documents cités et date associée lorsqu'elle est visible. |
+| `condition_notes` | `completeness`, `legibility_issues`, `physical_damage`, `damage_description`, `handwritten_annotations`, `special_observations` : état observable, sans conclure à la complétude d'un PDF depuis une page. |
+| `confidence_quality` | `overall_confidence`, `uncertain_elements`, `requires_manual_review`, `review_reasons` : incertitudes déclarées par le modèle, non calibrées et à vérifier. |
+
+Le prompt adapté utilise `hijri`, `gregorian`, `unknown` en minuscules pour le calendrier. Ses `indicators` sont une chaîne ou `null`, alors que les premières propositions de ce document utilisaient une liste : choisir et versionner un contrat unique avant d'implémenter le validateur. Les ajouts proposés comme `field_results` ne sont pas encore intégrés au modèle de sortie de ce prompt.
+
+### Adaptations pour éviter les données inventées
+
+- Autoriser `null` pour les valeurs inconnues, y compris les booléens et les catégories, au lieu de forcer une décision.
+- Retirer du prompt exécuté les exemples avec noms, dates et valeurs chiffrées susceptibles d'être recopiés hors contexte.
+- Conserver `subject_translation` à `null` sans demande explicite de traduction.
+- Interdire la déduction de l'origine numérique d'un cachet, de l'identité d'un signataire ou d'une valeur de graphique non imprimée.
+- Ne pas déduire le contenu d'un QR code : `readable_data` reste `null` sans décodage indépendant fourni.
+- Inclure tout le texte visible dans `full_text`, même lorsqu'il est aussi extrait dans un tableau ou un autre champ.
+
+Le prompt complet et `full_text` peuvent dépasser le budget actuel de 1 024 tokens. Un JSON coupé n'est pas une extraction valide. Les demandes ciblées restent préférables pour les premiers tests ; contrôler la troncature, valider le JSON et comparer les valeurs au scan avant toute utilisation.
+
+### Encodage optionnel de l'image
+
+La fonction `image_to_base64_data_uri(image_path)` accepte une chaîne ou un `Path`, lit le format avec Pillow et encode les octets avec `base64`. Elle ne réalise aucun appel réseau. Gemma local reçoit déjà `sample_image` au format Pillow : l'encodage n'est pas nécessaire pour cette inférence. Ne pas afficher l'URI complète, qui contient les données de l'image.
+
 ## Exemple de demande ciblée
 
 Plutôt que de demander tous les champs en une seule génération, commencer par une tâche courte pour limiter le coût et les sorties tronquées :
@@ -362,3 +412,11 @@ Les seuils d'acceptation doivent être définis avec le besoin métier. Pour une
 Enregistrer pour chaque exécution : empreinte du PDF source, page, transformations de l'image, checkpoint et révision, versions des bibliothèques, prompt versionné, paramètres de génération, sortie brute, résultat validé et état de revue. Ne jamais inclure de token Hugging Face dans ces enregistrements.
 
 La prochaine implémentation peut commencer par une seule tâche de métadonnées, un schéma versionné et quelques exemples annotés. Étendre ensuite aux tableaux et aux références si les erreurs observées et le budget le permettent. Ce document reste une proposition technique ; il n'ajoute ni nouvelles inférences au notebook ni validation automatique.
+
+## Collecte des candidats pour la distillation
+
+La section **Knowledge Distillation** présente sept étapes distinctes : trouver les images, configurer un essai, préparer le message, demander les extractions, vérifier le JSON, sauvegarder en JSONL et lire le coût estimé. Chaque cellule affiche son propre bilan et comporte des commentaires en anglais.
+
+Le mode `dry_run=True` ne fait aucun appel ni écriture. En mode réel, trois pages sont sélectionnées par défaut et les tarifs doivent être renseignés. Les réponses sont conservées en mémoire jusqu'à la sauvegarde dans un fichier horodaté sous `outputs/distillation/`. Cette version pédagogique n'a pas de reprise automatique : relancer l'extraction peut générer de nouveaux frais.
+
+Un JSON analysable reste un candidat `review_status="pending"`. Vérifier les valeurs sur les scans avant de constituer les labels d'entraînement. Sorties invalides ou tronquées restent conservées pour diagnostic. L'estimation des tokens connus n'est pas un plafond et peut exclure les frais de requêtes échouées. La collecte complète et le finetuning ne sont pas validés.
